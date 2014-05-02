@@ -21,6 +21,7 @@ namespace EightBit.RedisMvc.Web
         /// <summary>
         /// The application_ start.
         /// </summary>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Performance", "CA1822:MarkMembersAsStatic", Justification = "This is fine as a design of Mvc. Could change this but does not worth in context of Mvc.")]
         protected void Application_Start()
         {
             AreaRegistration.RegisterAllAreas();

@@ -12,6 +12,8 @@ namespace EightBit.RedisMvc.Web
 {
     using System.Web.Mvc;
 
+    using EightBit.RedisMvc.Helpers;
+
     /// <summary>
     /// The filter config.
     /// </summary>
@@ -25,6 +27,8 @@ namespace EightBit.RedisMvc.Web
         /// </param>
         public static void RegisterGlobalFilters(GlobalFilterCollection filters)
         {
+            Ensure.ArgumentNotNull(filters, "filters");
+
             filters.Add(new HandleErrorAttribute());
         }
     }

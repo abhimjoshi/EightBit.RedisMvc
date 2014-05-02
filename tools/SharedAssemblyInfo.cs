@@ -12,8 +12,8 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 
 [assembly: AssemblyCompany("Abhi Inc")]
-[assembly: AssemblyCopyright("Copyright © 2013 by Abhi Joshi")]
-[assembly: AssemblyTrademark("Copyright © 2013 by Abhi Joshi")]
+[assembly: AssemblyCopyright("Copyright © 2014 by Abhi Joshi")]
+[assembly: AssemblyTrademark("Copyright © 2014 by Abhi Joshi")]
 [assembly: AssemblyCulture("")]
 
 #if DEBUG

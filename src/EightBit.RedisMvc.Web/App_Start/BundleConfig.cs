@@ -12,13 +12,13 @@ namespace EightBit.RedisMvc.Web
 {
     using System.Web.Optimization;
 
+    using EightBit.RedisMvc.Helpers;
+
     /// <summary>
     /// The bundle config.
     /// </summary>
     public static class BundleConfig
     {
-        // For more information on bundling, visit http://go.microsoft.com/fwlink/?LinkId=301862
-
         /// <summary>
         /// The register bundles.
         /// </summary>
@@ -27,6 +27,8 @@ namespace EightBit.RedisMvc.Web
         /// </param>
         public static void RegisterBundles(BundleCollection bundles)
         {
+            Ensure.ArgumentNotNull(bundles, "bundles");
+           
             bundles.Add(new ScriptBundle("~/bundles/jquery").Include(
                         "~/Scripts/jquery-{version}.js"));
 
