@@ -1,0 +1,528 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Data.SqlClient;
+using System.Linq;
+using System.Text;
+using Milestone.Cms.Log;
+using Milestone.Cms.Extensions;
+using Dapper;
+using System.Threading.Tasks;
+using Milestone.Cms.Entities;
+
+namespace Milestone.Cms.Persistence.Sql
+{
+    /// <summary>
+    /// Base class for creating implementations of IXxxxPersistence interfaces
+    /// that utilize SQL Server for data storage.
+    /// 
+    /// Uses Dapper. See http://code.google.com/p/dapper-dot-net/
+    /// </summary>
+    public class Base
+    {
+        /// <summary>
+        /// Connection string. Each persistence class works with one database.
+        /// </summary>
+        private string connectionString;
+
+        /// <summary>
+        /// Number of milliseconds to delay between retries.
+        /// </summary>
+        private int sqlRetryDelayMilliseconds = 0;
+
+        /// <summary>
+        /// Number of times to retry.
+        /// </summary>
+        private int sqlRetryCount = 0;
+
+        /// <summary>
+        /// Timeout for queries while retrying.
+        /// </summary>
+        private int sqlRetryCommandTimeoutSeconds = 5;
+
+        /// <summary>
+        /// Arbitrary expected execution time, including connection opening. If exceeded, log a warning.
+        /// </summary>
+        private int sqlExpectedExecutionTimeMilliseconds = 300;
+
+        /// <summary>
+        /// Initialize basic SQL persistence functionality.
+        /// </summary>
+        /// <param name="connectionName">Name of the connection as specified in .config file.</param>
+        public Base(string connectionName)
+        {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                connectionString =
+                    ConfigurationManager.ConnectionStrings[connectionName].ConnectionString;
+
+                var sRetryDelayMilliseconds = ConfigurationManager.AppSettings["SqlRetryDelayMilliseconds"];
+                if (sRetryDelayMilliseconds != null)
+                    sqlRetryDelayMilliseconds = int.Parse(sRetryDelayMilliseconds);
+
+                var sRetryCount = ConfigurationManager.AppSettings["SqlRetryCount"];
+                if (sRetryCount != null)
+                    sqlRetryCount = int.Parse(sRetryCount);
+
+                Logger.Log(typeof(Base), Level.Debug, Category.Database, "Base initialization completed.",
+                    ToParams(), stopwatch.ElapsedMilliseconds);
+
+                //TODO: am p3. If initialization starts taking long, log a warning.
+            }
+            catch (Exception e)
+            {
+                Logger.Log(typeof(Base), Level.Fatal, Category.Database, "Base initialization failed.",
+                    string.Format("ConnectionName={0}", connectionName), stopwatch.ElapsedMilliseconds, e);
+                //Dump all the content for research.
+                Logger.Log(typeof(Base), Level.Error, Category.Database, "Base initialization failed info.",
+                    ToParams(), stopwatch.ElapsedMilliseconds);
+            }
+        }
+
+        /// <summary>
+        /// Gets connection string to the current database.
+        /// </summary>
+        protected string ConnectionString
+        {
+            get
+            {
+                //TODO: am p3. To scale up application might start using multiple databases in the future. Return proper string based on who the user is.
+                return connectionString;
+            }
+        }
+
+        private string ToParams()
+        {
+            return string.Format("ConnectionString={0};RetryDelayMilliseconds={1};RetryCount={2}",
+                connectionString.ToStringOrNull(), sqlRetryDelayMilliseconds, sqlRetryCount);
+        }
+
+        /// <summary>
+        /// Execute query synchronously with retries.
+        /// Only works for queries and stored procedures that return a single recordset.
+        /// </summary>
+        /// <typeparam name="T">Type of POCO object to return.</typeparam>
+        /// <param name="statement">SQL statement text.</param>
+        /// <param name="parameters">Statement parameters as anonymous object.</param>
+        /// <param name="commandType">Type of a command to execute.</param>
+        /// <param name="expectedExecutionTimeMilliseconds">Expected execution duration (milliseconds).</param>
+        /// <returns>Enumeration of POCO entities.</returns>
+        public IEnumerable<T> Execute<T>(string statement, dynamic parameters = null,
+            CommandType commandType = CommandType.StoredProcedure,
+            int? expectedExecutionTimeMilliseconds = null)
+        {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+            var maxExecTime = expectedExecutionTimeMilliseconds != null
+                && expectedExecutionTimeMilliseconds.HasValue
+                ? expectedExecutionTimeMilliseconds.Value
+                : sqlExpectedExecutionTimeMilliseconds;
+
+            try
+            {
+                Logger.Log<Base>(Level.Trace,
+                    Category.Database, "Execute query",
+                    string.Format("Statement={0};Params={1};CommandType={2}",
+                    statement, parameters, commandType));
+
+                IEnumerable<T> result = null;
+                bool done = false;
+                for (var iRetry = 0; iRetry <= sqlRetryCount && !done; iRetry++)
+                {
+                    using (var connection = new SqlConnection(this.ConnectionString))
+                    {
+                        var queryStopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+                        try
+                        {
+                            //TODO: am p3. Measure time to open connection separately from the query.
+                            connection.Open();
+
+                            //TODO: am p2. Add transaction support.
+                            result = SqlMapper.Query<T>(connection, statement, parameters, null, true,
+                                iRetry == 0 ? (int?)null
+                                : (int?)sqlRetryCommandTimeoutSeconds, commandType);
+
+                            done = true;
+                        }
+                        catch (Exception e)
+                        {
+                            Logger.Log<Base>(iRetry < sqlRetryCount ? Level.Warn : Level.Error,
+                                Category.Database, "Database open or statement failed.",
+                                string.Format("Statement={0};Params={1};TryCount={2}",
+                                statement, parameters, iRetry),
+                                queryStopwatch.ElapsedMilliseconds, e);
+
+                            if (iRetry < sqlRetryCount)
+                            {
+                                if (sqlRetryDelayMilliseconds > 0)
+                                    System.Threading.Thread.Sleep(sqlRetryDelayMilliseconds);
+                            }
+                            else
+                                throw e;
+                        }
+                        finally
+                        {
+                            queryStopwatch.Stop();
+                        }
+                    }
+                }
+                return result;
+            }
+            finally
+            {
+                stopwatch.Stop();
+                if (stopwatch.ElapsedMilliseconds > maxExecTime)
+                    Logger.Log<Base>(Level.Warn,
+                        Category.Database, "Slow statement.",
+                        string.Format("Statement={0};Params={1}",
+                        statement, parameters),
+                        stopwatch.ElapsedMilliseconds);
+            }
+        }
+
+        /// <summary>
+        /// Execute query synchronously with retries.
+        /// Intended for queries and stored procedures that return a multiple recordset.
+        /// </summary>
+        /// <param name="fetchData">Callback the retrieves data from the reader.</param>
+        /// <param name="statement">SQL statement text.</param>
+        /// <param name="parameters">Statement parameters as anonymous object.</param>
+        /// <param name="commandType">Type of a command to execute.</param>
+        /// <param name="expectedExecutionTimeMilliseconds">Expected execution duration (milliseconds).</param>
+        private void DoExecute(Action<SqlMapper.GridReader> fetchData,
+            string statement, dynamic parameters = null,
+            CommandType commandType = CommandType.StoredProcedure,
+            int? expectedExecutionTimeMilliseconds = null)
+        {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+            var maxExecTime = expectedExecutionTimeMilliseconds != null
+                && expectedExecutionTimeMilliseconds.HasValue
+                ? expectedExecutionTimeMilliseconds.Value
+                : sqlExpectedExecutionTimeMilliseconds;
+
+            try
+            {
+                Logger.Log<Base>(Level.Trace,
+                    Category.Database, "Execute multiple query",
+                    string.Format("Statement={0};Params={1};CommandType={2}",
+                    statement, parameters, commandType));
+
+                bool done = false;
+                for (var iRetry = 0; iRetry <= sqlRetryCount && !done; iRetry++)
+                {
+                    using (var connection = new SqlConnection(this.ConnectionString))
+                    {
+                        var queryStopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+                        try
+                        {
+                            //TODO: am p3. Measure time to open connection separately from the query.
+                            connection.Open();
+
+                            //TODO: am p2. Add transaction support.
+                            SqlMapper.GridReader reader = SqlMapper.QueryMultiple(connection,
+                                statement, parameters, null, iRetry == 0 ? (int?)null
+                                : (int?)sqlRetryCommandTimeoutSeconds, commandType);
+
+                            //Allow caller to retrieve results as it sees fit.
+                            if (fetchData != null)
+                                fetchData(reader);
+
+                            done = true;
+                        }
+                        catch (Exception e)
+                        {
+                            Logger.Log<Base>(iRetry < sqlRetryCount ? Level.Warn : Level.Error,
+                                Category.Database, "Database open or multiple statement failed.",
+                                string.Format("Statement={0};Params={1};TryCount={2}",
+                                statement, parameters, iRetry),
+                                queryStopwatch.ElapsedMilliseconds, e);
+
+                            if (iRetry < sqlRetryCount)
+                            {
+                                if (sqlRetryDelayMilliseconds > 0)
+                                    System.Threading.Thread.Sleep(sqlRetryDelayMilliseconds);
+                            }
+                            else
+                                throw e;
+                        }
+                        finally
+                        {
+                            queryStopwatch.Stop();
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                stopwatch.Stop();
+                if (stopwatch.ElapsedMilliseconds > maxExecTime)
+                    Logger.Log<Base>(Level.Warn,
+                        Category.Database, "Slow multiple statement.",
+                        string.Format("Statement={0};Params={1}",
+                        statement, parameters),
+                        stopwatch.ElapsedMilliseconds);
+            }
+        }
+
+        /// <summary>
+        /// Execute query synchronously with retries. Expects two returned recordsets.
+        /// </summary>
+        /// <typeparam name="T1">Type of first POCO object to return.</typeparam>
+        /// <typeparam name="T2">Type of second POCO object to return.</typeparam>
+        /// <param name="statement">SQL statement text.</param>
+        /// <param name="parameters">Statement parameters as anonymous object.</param>
+        /// <param name="commandType">Type of a command to execute.</param>
+        /// <param name="expectedExecutionTimeMilliseconds">Expected execution duration (milliseconds).</param>
+        /// <returns>Enumeration of POCO entities.</returns>
+        /// <returns>Tuple with enumerations of POCO entities.</returns>
+        public Tuple<IEnumerable<T1>, IEnumerable<T2>> Execute<T1, T2>(
+            string statement, dynamic parameters = null,
+            CommandType commandType = CommandType.StoredProcedure,
+            int? expectedExecutionTimeMilliseconds = null)
+        {
+            try
+            {
+                IEnumerable<T1> result1 = null;
+                IEnumerable<T2> result2 = null;
+                DoExecute((Action<SqlMapper.GridReader>)(r =>
+                {
+                    try { result1 = r.Read<T1>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 1", e); }
+                    try { result2 = r.Read<T2>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 2", e); }
+                }), statement, parameters, commandType, expectedExecutionTimeMilliseconds);
+
+                return new Tuple<IEnumerable<T1>, IEnumerable<T2>>(
+                    result1, result2);
+            }
+            catch (Exception e)
+            {
+                Logger.Log<Base>(Level.Error, Category.Database,
+                    "Error reading multi-recordset result.", "ResultTotal=2", null, e);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Execute query synchronously with retries. Expects two returned recordsets.
+        /// </summary>
+        /// <typeparam name="T1">Type of first POCO object to return.</typeparam>
+        /// <typeparam name="T2">Type of second POCO object to return.</typeparam>
+        /// <typeparam name="T3">Type of third POCO object to return.</typeparam>
+        /// <param name="statement">SQL statement text.</param>
+        /// <param name="parameters">Statement parameters as anonymous object.</param>
+        /// <param name="commandType">Type of a command to execute.</param>
+        /// <param name="expectedExecutionTimeMilliseconds">Expected execution duration (milliseconds).</param>
+        /// <returns>Enumeration of POCO entities.</returns>
+        /// <returns>Tuple with enumerations of POCO entities.</returns>
+        public Tuple<IEnumerable<T1>, IEnumerable<T2>, IEnumerable<T3>> Execute<T1, T2, T3>(
+            string statement, dynamic parameters = null,
+            CommandType commandType = CommandType.StoredProcedure,
+            int? expectedExecutionTimeMilliseconds = null)
+        {
+            try
+            {
+                IEnumerable<T1> result1 = null;
+                IEnumerable<T2> result2 = null;
+                IEnumerable<T3> result3 = null;
+                DoExecute((Action<SqlMapper.GridReader>)(r =>
+                {
+                    try { result1 = r.Read<T1>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 1", e); }
+                    try { result2 = r.Read<T2>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 2", e); }
+                    try { result3 = r.Read<T3>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 3", e); }
+                }), statement, parameters, commandType, expectedExecutionTimeMilliseconds);
+
+                return new Tuple<IEnumerable<T1>, IEnumerable<T2>, IEnumerable<T3>>(
+                    result1, result2, result3);
+            }
+            catch (Exception e)
+            {
+                Logger.Log<Base>(Level.Error, Category.Database,
+                    "Error reading multi-recordset result.", "ResultTotal=3", null, e);
+                throw;
+            }
+        }
+        //TODO: am p3. Create asynchronous version for writing not very important data.
+
+
+        /// <summary>
+        /// Execute query synchronously with retries. Expects two returned recordsets.
+        /// </summary>
+        /// <typeparam name="T1">Type of first POCO object to return.</typeparam>
+        /// <typeparam name="T2">Type of second POCO object to return.</typeparam>
+        /// <typeparam name="T3">Type of third POCO object to return.</typeparam>
+        /// <param name="statement">SQL statement text.</param>
+        /// <param name="parameters">Statement parameters as anonymous object.</param>
+        /// <param name="commandType">Type of a command to execute.</param>
+        /// <param name="expectedExecutionTimeMilliseconds">Expected execution duration (milliseconds).</param>
+        /// <returns>Enumeration of POCO entities.</returns>
+        /// <returns>Tuple with enumerations of POCO entities.</returns>
+        public Tuple<IEnumerable<T1>, IEnumerable<T2>, IEnumerable<T3>> Execute1<T1, T2, T3>(
+            string statement, dynamic parameters = null,
+            CommandType commandType = CommandType.StoredProcedure,
+            int? expectedExecutionTimeMilliseconds = null, dynamic otherParameters = null)
+        {
+            try
+            {
+
+
+                if (otherParameters != null)
+                {
+                    parameters = this.Merge(parameters, otherParameters);
+                }
+
+                IEnumerable<T1> result1 = null;
+                IEnumerable<T2> result2 = null;
+                IEnumerable<T3> result3 = null;
+                DoExecute((Action<SqlMapper.GridReader>)(r =>
+                {
+                    try { result1 = r.Read<T1>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 1", e); }
+                    try { result2 = r.Read<T2>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 2", e); }
+                    try { result3 = r.Read<T3>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 3", e); }
+                }), statement, parameters, commandType, expectedExecutionTimeMilliseconds);
+
+                return new Tuple<IEnumerable<T1>, IEnumerable<T2>, IEnumerable<T3>>(
+                    result1, result2, result3);
+
+            }
+            catch (Exception e)
+            {
+                Logger.Log<Base>(Level.Error, Category.Database,
+                    "Error reading multi-recordset result.", "ResultTotal=3", null, e);
+                throw;
+            }
+        }
+
+        public TableList<T1> Execute2<T1>(
+           string statement, dynamic parameters = null,
+           CommandType commandType = CommandType.StoredProcedure,
+           int? expectedExecutionTimeMilliseconds = null, dynamic otherParameters = null)
+        {
+            try
+            {
+
+
+                if (otherParameters != null)
+                {
+                    parameters = this.Merge(parameters, otherParameters);
+                }
+
+                IEnumerable<T1> result1 = null;
+                IEnumerable<int> result2 = null;
+                IEnumerable<T1> result3 = null;
+                DoExecute((Action<SqlMapper.GridReader>)(r =>
+                {
+                    try { result1 = r.Read<T1>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 1", e); }
+                    try { result2 = r.Read<int>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 2", e); }
+                    try { result3 = r.Read<T1>(); }
+                    catch (Exception e)
+                    { throw new Exception("Unable to read recordset 3", e); }
+                }), statement, parameters, commandType, expectedExecutionTimeMilliseconds);
+
+                return new TableList<T1>()
+                {
+                    Result = result3,
+                    Count = result2.FirstOrDefault()
+                };
+
+            }
+            catch (Exception e)
+            {
+                Logger.Log<Base>(Level.Error, Category.Database,
+                    "Error reading multi-recordset result.", "ResultTotal=3", null, e);
+                throw;
+            }
+        }
+
+        private dynamic Merge(object item1, object item2)
+        {
+            var dict = (new System.Dynamic.ExpandoObject() as IDictionary<string, object>);
+
+            foreach (var prop in item1.GetType().GetProperties())
+            {
+                if (prop.CanRead)
+                {
+                    dict[prop.Name] = prop.GetValue(item1);
+                }
+            }
+
+            foreach (var prop in item2.GetType().GetProperties())
+            {
+                if (prop.CanRead)
+                {
+                    dict[prop.Name] = prop.GetValue(item2);
+                }
+            }
+
+            return dict;
+        }
+
+        /// <summary>
+        /// Bind/Map DataTable to Object's Fields and Properties
+        /// </summary>
+        /// <typeparam name="T">Class name</typeparam>
+        /// <param name="dt">datatable</param>
+        /// <returns></returns>
+        public T BindObjectData<T>(DataTable dt)
+        {
+            DataRow dr = dt.Rows[0];
+
+            // Get all columns' name
+            List<string> columns = new List<string>();
+            foreach (DataColumn dc in dt.Columns)
+            {
+                columns.Add(dc.ColumnName);
+            }
+
+            // Create object
+            var ob = Activator.CreateInstance<T>();
+
+            // Get all fields
+            var fields = typeof(T).GetFields();
+            foreach (var fieldInfo in fields)
+            {
+                if (columns.Contains(fieldInfo.Name))
+                {
+                    // Fill the data into the field
+                    fieldInfo.SetValue(ob, dr[fieldInfo.Name]);
+                }
+            }
+
+            // Get all properties
+            var properties = typeof(T).GetProperties();
+            foreach (var propertyInfo in properties)
+            {
+                if (columns.Contains(propertyInfo.Name))
+                {
+                    // Fill the data into the property
+                    propertyInfo.SetValue(ob, dr[propertyInfo.Name] == DBNull.Value ? string.Empty : dr[propertyInfo.Name]);
+                }
+            }
+
+            return ob;
+        }
+    }
+}

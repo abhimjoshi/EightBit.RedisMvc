@@ -1,0 +1,54 @@
+﻿using Milestone.Cms.Entities.Gengo;
+using Milestone.Cms.Entities.ParamEntities;
+using Milestone.Cms.Persistence.Gengo;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+
+namespace Milestone.Cms.Persistence.Sql.Gengo
+{
+    public class GengoOrderPersistence : Base, IGengoOrderPersistence
+    {
+        public GengoOrderPersistence()
+            : base(Constants.ConnectionString.Cms)
+        { }
+
+        /// <summary>
+        /// Gets the Gengo Order
+        /// </summary>
+        /// <returns>
+        /// Object of Provider
+        /// </returns>
+        public Tuple<IEnumerable<GengoOrderModel>, IEnumerable<int>, IEnumerable<GengoOrderModel>>
+           GetGengoOrderList(PGengo gengoParameter)
+        {
+            try
+            {
+                return base.Execute<GengoOrderModel, int, GengoOrderModel>("GetGengoOrderList",
+                    new
+                    {
+                        ParamName = gengoParameter.ParamName,
+                        ParamValue = gengoParameter.ParamValue,
+                        ParamValue2 = gengoParameter.ParamValue2,
+                        PageNumber = gengoParameter.PageNumber,
+                        PageSize = gengoParameter.PageSize,
+                        SortKey = gengoParameter.SortKey,
+                        SortOrder = gengoParameter.SortOrder,
+                        SiteId = gengoParameter.SiteId,
+                        GengoEnvironmentId = gengoParameter.GengoEnvironmentId
+                    }
+                    , CommandType.StoredProcedure, 500);
+            }
+            catch (Exception ex)
+            {
+                Log.Logger.Log<GengoTranslationPersistence>(
+                    Log.Level.Error,
+                    Log.Category.Database,
+                    "Error while retrieving gengo order list from DB.", null, null, ex);
+                return null;
+            }
+        }
+
+    }
+}
