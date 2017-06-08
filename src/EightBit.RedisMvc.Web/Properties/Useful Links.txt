@@ -1,0 +1,5 @@
+User Role Permission: Asp.Net Core
+
+https://stackoverflow.com/questions/37247094/can-policy-based-authorization-be-more-dynamic
+https://github.com/leastprivilege/AspNetCoreSecuritySamples (samples)
+https://stackoverflow.com/questions/33076266/dynamically-add-roles-to-authorize-attribute-for-controller-in-asp-net-5
