@@ -3,3 +3,4 @@ User Role Permission: Asp.Net Core
 https://stackoverflow.com/questions/37247094/can-policy-based-authorization-be-more-dynamic
 https://github.com/leastprivilege/AspNetCoreSecuritySamples (samples)
 https://stackoverflow.com/questions/33076266/dynamically-add-roles-to-authorize-attribute-for-controller-in-asp-net-5
+https://stackoverflow.com/questions/44432674/asp-net-core-access-custom-authorizeattribute-property-in-authorizehandler (best: custom role permission in asp.net core)
