@@ -46,7 +46,7 @@ namespace EightBit.RedisMvc.Web.Controllers
         /// </returns>
         public ActionResult Contact()
         {
-            ViewBag.Message = "Your contact page.";
+            ViewBag.Message = "Your contact page!";
 
             return this.View();
         }
